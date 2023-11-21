@@ -22,3 +22,6 @@ cpp/cmake-build-*
 # Testing
 .coverage.*
 results_trt/
+
+*.sw[po]
+*~

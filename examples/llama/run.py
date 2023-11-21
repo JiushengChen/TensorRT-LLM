@@ -26,6 +26,7 @@ from tensorrt_llm.quantization import QuantMode
 from tensorrt_llm.runtime import ModelConfig, SamplingConfig
 
 from build import get_engine_name  # isort:skip
+import time
 
 EOS_TOKEN = 2
 PAD_TOKEN = 2
@@ -88,8 +89,13 @@ def parse_input(input_text: str, input_file: str, tokenizer, end_id: int,
                 remove_input_padding: bool):
     input_tokens = []
     if input_file is None:
-        input_tokens.append(
-            tokenizer.encode(input_text, add_special_tokens=False))
+        if type(input_text) == type(""):
+            input_tokens.append(
+                tokenizer.encode(input_text, add_special_tokens=False)[:2048])
+        elif type(input_text) == type([]):
+            for input_text_ in input_text:
+                input_tokens.append(
+                    tokenizer.encode(input_text_, add_special_tokens=False)[:2048])
     else:
         if input_file.endswith('.csv'):
             with open(input_file, 'r') as csv_file:
@@ -189,8 +195,17 @@ def parse_arguments():
                         type=int,
                         help="How often to return tokens when streaming.",
                         default=5)
+    parser.add_argument('--batch_size',
+                        type=int,
+                        default=1)
+    parser.add_argument('--num_samples',
+                        type=int,
+                        default=128)
     return parser.parse_args()
 
+def print_benchmark(latencies, batch_size):
+    latencies.sort()
+    print(f"batch_size: {batch_size}, min: {latencies[0]:.3f}, max: {latencies[-1]:.3f}, p50: {latencies[len(latencies)//2]:.3f}, p95: {latencies[int(len(latencies)*0.95)]:.3f}, p99: {latencies[int(len(latencies)*0.99)]:.3f}")
 
 def generate(
     max_output_len: int,
@@ -204,6 +219,8 @@ def generate(
     num_beams: int = 1,
     streaming: bool = False,
     streaming_interval: int = 5,
+    batch_size: int = 1,
+    num_samples: int = 128,
 ):
     tensorrt_llm.logger.set_level(log_level)
 
@@ -238,30 +255,75 @@ def generate(
     if runtime_rank == 0:
         print(f"Running the {dtype} engine ...")
 
-    input_ids, input_lengths = parse_input(input_text, input_file, tokenizer,
-                                           EOS_TOKEN,
-                                           model_config.remove_input_padding)
+    if input_text:
+        input_ids, input_lengths = parse_input(input_text, input_file, tokenizer,
+                                               EOS_TOKEN,
+                                               model_config.remove_input_padding)
 
-    max_input_length = torch.max(input_lengths).item()
-    decoder.setup(input_lengths.size(0), max_input_length, max_output_len,
-                  num_beams)
+        max_input_length = torch.max(input_lengths).item()
+        decoder.setup(input_lengths.size(0), max_input_length, max_output_len,
+                      num_beams)
 
-    output_gen_ids = decoder.decode(input_ids,
-                                    input_lengths,
-                                    sampling_config,
-                                    streaming=streaming)
-    torch.cuda.synchronize()
-    if streaming:
-        for output_ids in throttle_generator(output_gen_ids,
-                                             streaming_interval):
+        output_gen_ids = decoder.decode(input_ids,
+                                        input_lengths,
+                                        sampling_config,
+                                        streaming=streaming)
+        torch.cuda.synchronize()
+        if streaming:
+            for output_ids in throttle_generator(output_gen_ids,
+                                                 streaming_interval):
+                if runtime_rank == 0:
+                    print_output(output_ids, input_lengths, max_output_len,
+                                 tokenizer, output_csv, output_npy)
+        else:
+            output_ids = output_gen_ids
             if runtime_rank == 0:
-                print_output(output_ids, input_lengths, max_output_len,
-                             tokenizer, output_csv, output_npy)
+                print_output(output_ids, input_lengths, max_output_len, tokenizer,
+                             output_csv, output_npy)
     else:
-        output_ids = output_gen_ids
-        if runtime_rank == 0:
-            print_output(output_ids, input_lengths, max_output_len, tokenizer,
-                         output_csv, output_npy)
+        ads_data = "/dd/fhu/github/tensorrt_llm/examples/llama/sample_data_0808_0830_10k.output.AdsLLM.train.prompt.tsv"
+        with open(ads_data, "r") as infile:
+          input_texts = infile.readlines()
+
+        # adjust the number of samples to be a multiple of batch_size
+        num_samples = num_samples // batch_size * batch_size
+
+        input_texts = input_texts[:num_samples]
+        latencies = []
+
+        num_generated_tokens = 0
+        decoder.setup(batch_size, 2048, max_output_len)
+
+        for i in range(0, len(input_texts), batch_size):
+            batch_texts = input_texts[i : i + batch_size]
+            input_ids, input_lengths = parse_input(batch_texts, input_file, tokenizer,
+                                                  EOS_TOKEN,
+                                                  model_config.remove_input_padding)
+            # print(input_ids, input_lengths)
+            max_input_length = torch.max(input_lengths).item()
+            print(f"Run batch-{1+i//batch_size}/{num_samples//batch_size} with input shape {input_ids.shape}")
+            # decoder.setup(input_lengths.size(0), max_input_length, max_output_len)
+
+            start = time.time()
+            output_ids = decoder.decode(input_ids, input_lengths, sampling_config)
+            torch.cuda.synchronize()
+            end = time.time()
+            latencies.append((end - start) * 1000)
+            print(f"\t --> output_shape {output_ids.shape} : {latencies[-1]:.3f} ms")
+
+            input_token_num = input_lengths.sum().item()
+            generated_token_num = (output_ids != PAD_TOKEN).sum().item() - input_token_num
+            print(f"\t --> Num of generated tokens = {generated_token_num}")
+            print(f"\t\t --> input_token_num = {input_token_num}, output_token_num = {output_ids.numel()}, output_padding_num = {(output_ids == PAD_TOKEN).sum().item()} ")
+            num_generated_tokens += generated_token_num
+
+        #if runtime_rank == 0:
+        #    print(output_ids.shape, output_ids)
+        #    print_output(output_ids, input_lengths, max_output_len, tokenizer,
+        #                output_csv, output_npy)
+
+        print_benchmark(latencies, batch_size)
+        print(f"Throughput = {int(num_generated_tokens / sum(latencies) * 1000 + 0.5)} tokens/s")
 
 
 if __name__ == '__main__':
