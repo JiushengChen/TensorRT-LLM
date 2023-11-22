@@ -61,8 +61,11 @@ python3 hf_llama_convert.py \
           -t fp16
 COMMENT
 
-# A100
+#
+# A100 benchmark
 : <<'COMMENT'
+#
+# 7B model
 # build trt engine
 CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016 \
 python build.py --model_dir /nvme0-mnt/model/llama/data/models/llama-2/7B-hf/ \
@@ -79,10 +82,9 @@ python build.py --model_dir /nvme0-mnt/model/llama/data/models/llama-2/7B-hf/ \
                 --max_input_len 2048 \
                 --max_output_len 256 \
                 --output_dir /nvme0-mnt/model/llama/data/models/llama-2/7B-hf/trt_engines/int4_GPTQ_batch45_r0.5/1-gpu/
-COMMENT
 
-#batch_size = 45: min: 7084.123849868774, max: 10423.168659210205, p50: 9698.72498512268, p95: 10423.168659210205, p99: 10423.168659210205
-#Throughput = 1172.5899323199128 tokens/s
+#batch_size: 45, min: 5858.132, max: 10420.846, p50: 9740.724, p95: 10384.242, p99: 10420.846
+#Throughput = 1222 tokens/s
 tokenizer_dir=/nvme0-mnt/model/llama/data/models/llama-2/7B-hf/
 engine_dir=/nvme0-mnt/model/llama/data/models/llama-2/7B-hf/trt_engines/int4_GPTQ_batch45_r0.5/1-gpu/
 ## fp16 model
@@ -94,6 +96,7 @@ python3 run.py --max_output_len=256 \
                 --input_text "" \
                 --batch_size 45 \
                 --num_samples 1024
+COMMENT
 
 #
 # interactive mode
@@ -105,20 +108,71 @@ python3 run.py --max_output_len=256 \
                --engine_dir=/nvme0-mnt/model/llama/data/models/llama-2/7B-hf/trt_engines/int4_GPTQ_batch45c/1-gpu/
 
 
-
-# interactive mode, HF model
-# upstage/Llama-2-70b-instruct
-CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016,GPU-edd78cc7-6a37-5a0d-f2f8-89698bbb7b82 \
-python3 llama_hf.py \
-    --model_dir /nvme2-mnt/Llama-2-70b-instruct \
-    --tokenizer_dir /nvme2-mnt/Llama-2-70b-instruct \
-    --interactive
-
 COMMENT
 
-BSZ=45
-# paged attention, very slow, 80 tokens/s
+#
+# upstage/Llama-2-70b-instruct
+#
+#export CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016,GPU-edd78cc7-6a37-5a0d-f2f8-89698bbb7b82
+export CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016
+tokenizer_dir=/nvme2-mnt/Llama-2-70b-instruct
+hf_model_dir=$tokenizer_dir
+engine_dir=$hf_model_dir/trt_engines/int4_GPTQ_batch16_r0.5_tp1_pp1/
 : <<'COMMENT'
+#
+# interactive mode, HF model
+python3 llama_hf.py \
+    --model_dir $hf_model_dir \
+    --tokenizer_dir $hf_model_dir \
+    --interactive
+#
+# HF speed
+# with 2 A100-80GB, bsz 4
+python3 llama_hf.py \
+    --model_dir $hf_model_dir \
+    --tokenizer_dir $hf_model_dir \
+    --batch_size 4 \
+    --num_samples 20
+COMMENT
+
+: <<'COMMENT'
+# build trt engine
+# RuntimeError: Sizes of tensors must match except in dimension 0. 
+# Expected size 8192 but got size 1024 for tensor number 1 in the list.
+quant_ckpt_path=/nvme2-mnt/Llama-2-70b-instruct/llama-70b-4bit-gs128.safetensors
+python build.py --model_dir $hf_model_dir \
+                --quant_ckpt_path $quant_ckpt_path \
+                --dtype float16 \
+                --use_gpt_attention_plugin float16 \
+                --use_gemm_plugin float16 \
+                --use_weight_only \
+                --weight_only_precision int4_gptq \
+                --per_group \
+                --enable_context_fmha \
+                --remove_input_padding \
+                --max_batch_size 16 \
+                --max_input_len 2048 \
+                --max_output_len 256 \
+                --output_dir $engine_dir \
+                --world_size 1 \
+                --tp_size 1 \
+                --pp_size 1
+
+
+# gptq 4 bit model benchmark
+python3 run.py --max_output_len=256 \
+               --tokenizer_dir $tokenizer_dir \
+               --engine_dir $engine_dir \
+                --input_text "" \
+                --batch_size 16 \
+                --num_samples 64
+COMMENT
+
+
+: <<'COMMENT'
+#
+# paged attention, very slow, 80 tokens/s
+BSZ=45
 # A100 paged kv, having OOM problem
 CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016 \
 python build.py --model_dir /nvme0-mnt/model/llama/data/models/llama-2/7B-hf/ \
