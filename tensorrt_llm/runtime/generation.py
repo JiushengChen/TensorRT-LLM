@@ -1803,7 +1803,7 @@ class GenerationSession(object):
         assert batch_size == self.batch_size, \
             "Given batch size is different from the one used in setup()," \
             "rerun the setup function with the new batch size to avoid buffer overflow."
-        assert max_context_length == self.max_context_length, \
+        assert max_context_length <= self.max_context_length, \
             "Given input length is large then the one used in setup()," \
             "rerun the setup function with the new max_context_length to avoid buffer overflow."
         assert beam_width == self.beam_width, \
