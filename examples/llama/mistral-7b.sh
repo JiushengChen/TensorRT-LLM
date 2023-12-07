@@ -26,15 +26,10 @@ python /dd/fhu/github/transformers/src/transformers/models/llama/convert_llama_w
 COMMENT
 
 # 7B
-hf_model_dir=/nvme0-mnt/model/llama/data/models/llama-2/7B-hf/
-quant_ckpt_path=$hf_model_dir/llama-7b-4bit-gs128.safetensors
-engine_dir=$hf_model_dir/trt_engines/int4_GPTQ_batch45_r0.5/1-gpu/
-
-## mistral
-#hf_model_dir=/nvme2-mnt/mistral/mistral-7B-v0.1-hf
-#quant_ckpt_path=$hf_model_dir/4bit-gs128.safetensors
-#engine_dir=$hf_model_dir/trt_engines/int4_GPTQ_batch45_r0.5/1-gpu/
-
+hf_model_dir=/nvme2-mnt/mistral/mistral-7B-v0.1-hf/
+engine_dir=$hf_model_dir/trt_engines/a100_fp16_bsz45_in2048_out256/
+#engine_dir=$hf_model_dir/trt_engines/a100_bfp16_bsz45_in2048_out256/
+quant_ckpt_path=$hf_model_dir/4bit-gs128.safetensors
 tokenizer_dir=$hf_model_dir
 
 #
@@ -104,19 +99,45 @@ python build.py --model_dir $hf_model_dir/ \
                 --max_input_len 2048 \
                 --max_output_len 256 \
                 --output_dir $engine_dir
-
 COMMENT
-#batch_size: 45, min: 5858.132, max: 10420.846, p50: 9740.724, p95: 10384.242, p99: 10420.846
-#Throughput = 1222 tokens/s
-## fp16 model
+
+# fp16
+rm -rf $engine_dir
+CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016 \
+python build.py --model_dir $hf_model_dir/ \
+                --dtype float16 \
+                --use_gpt_attention_plugin float16 \
+                --use_gemm_plugin float16 \
+                --enable_context_fmha \
+                --remove_input_padding \
+                --max_batch_size 45 \
+                --max_input_len 2048 \
+                --max_output_len 256 \
+                --output_dir $engine_dir
+
+"""
+# bfp16
+rm -rf $engine_dir
+CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016 \
+python build.py --model_dir $hf_model_dir/ \
+                --dtype bfloat16 \
+                --use_gpt_attention_plugin bfloat16 \
+                --use_gemm_plugin bfloat16 \
+                --enable_context_fmha \
+                --remove_input_padding \
+                --max_batch_size 45 \
+                --max_input_len 2048 \
+                --max_output_len 256 \
+                --output_dir $engine_dir
+"""
+
 CUDA_VISIBLE_DEVICES=GPU-b930159a-a609-47c4-a508-a534e7da9016 \
 python3 run.py --max_output_len=256 \
                --tokenizer_dir $tokenizer_dir \
                --engine_dir $engine_dir \
                 --input_text "" \
                 --batch_size 45 \
-                --num_samples 128
-
+                --num_samples 1024
 #
 # interactive mode
 #
