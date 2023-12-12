@@ -350,7 +350,9 @@ class GenerationSession(object):
             expected_tensor_names += ['hidden_states_input']
 
         if self.mapping.is_last_pp_rank():
+            #expected_tensor_names += ['last_hidden_states_output']
             expected_tensor_names += ['logits']
+            expected_tensor_names += ['last_hidden_states']
             if not model_config.gather_all_token_logits:
                 expected_tensor_names += ['last_token_ids']
         else:
@@ -783,6 +785,10 @@ class GenerationSession(object):
 
         self.buffer = {}
         if self.mapping.is_last_pp_rank():
+            self.buffer['last_hidden_states'] = torch.empty(
+                (batch_size, self.hidden_size),
+                dtype=self._tensor_dtype('last_hidden_states'),
+                device=self.device)
             self.buffer['logits'] = torch.empty(
                 (batch_size, self.vocab_size_padded)
                 if not self.gather_all_token_logits else
@@ -914,6 +920,7 @@ class GenerationSession(object):
 
         if self.mapping.is_last_pp_rank():
             ctx_buffer['logits'] = self.buffer['logits']
+            ctx_buffer['last_hidden_states'] = self.buffer['last_hidden_states']
 
             if not self.gather_all_token_logits:
                 ctx_shape['last_token_ids'] = last_token_ids.shape
@@ -1094,6 +1101,7 @@ class GenerationSession(object):
 
         if self.mapping.is_last_pp_rank():
             next_step_buffer['logits'] = self.buffer['logits']
+            next_step_buffer['last_hidden_states'] = self.buffer['last_hidden_states']
 
             if not self.gather_all_token_logits:
                 next_step_shape['last_token_ids'] = last_token_ids.shape
@@ -1452,6 +1460,13 @@ class GenerationSession(object):
             raise RuntimeError('Executing TRT engine failed!')
         if self.debug_mode:
             torch.cuda.synchronize()
+            # ----------------------
+            if step == 0:
+                print(self.debug_buffer.keys())
+
+            print(step, self.debug_buffer['last_hidden_states'].shape)
+            print(step, self.debug_buffer['last_hidden_states'])
+            self.buffer['last_hidden_states'] = self.debug_buffer['last_hidden_states']
 
         context_logits = None
         if self.mapping.is_last_pp_rank():
@@ -1643,6 +1658,7 @@ class GenerationSession(object):
         next_step_buffer = None
         attention_mask = None
         context_logits = None
+        generation_last_hidden_states = []
 
         def get_outputs_dict(output_ids):
             outputs = {}
@@ -1653,6 +1669,14 @@ class GenerationSession(object):
                         [batch_size, beam_width])
             if self.gather_all_token_logits:
                 outputs['context_logits'] = context_logits
+
+            if generation_last_hidden_states:
+                all_generation_last_hidden_states = torch.cat(generation_last_hidden_states, dim=0)
+                average_generation_last_hidden_states = torch.mean(all_generation_last_hidden_states, dim=0)
+            else:
+                average_generation_last_hidden_states = None
+            outputs['last_hidden_states'] = average_generation_last_hidden_states
+
             return outputs
 
         for step in range(0, self.max_new_tokens):
@@ -1667,6 +1691,8 @@ class GenerationSession(object):
                 encoder_input_lengths)
             if step == 0:
                 context_logits = logits
+            generation_last_hidden_states.append(
+                next_step_buffer['last_hidden_states'].detach().clone())
             if should_stop is not None and should_stop.item():
                 final_output_ids = self.finalize_decoder(
                     context_lengths, batch_size, beam_width, scfg)
@@ -1803,7 +1829,7 @@ class GenerationSession(object):
         assert batch_size == self.batch_size, \
             "Given batch size is different from the one used in setup()," \
             "rerun the setup function with the new batch size to avoid buffer overflow."
-        assert max_context_length == self.max_context_length, \
+        assert max_context_length <= self.max_context_length, \
             "Given input length is large then the one used in setup()," \
             "rerun the setup function with the new max_context_length to avoid buffer overflow."
         assert beam_width == self.beam_width, \

@@ -104,8 +104,8 @@ class LLaMADecoderLayer(Module):
                 all_reduce_workspace=None):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        if self._layer_id == 0:
-            self.register_network_output(f"norm0", hidden_states)
+        # if self._layer_id == 0:
+        #     self.register_network_output(f"norm0", hidden_states)
 
         attention_output = self.attention(hidden_states,
                                           attention_mask=attention_mask,
@@ -116,19 +116,19 @@ class LLaMADecoderLayer(Module):
 
         if use_cache:
             attention_output, presents = attention_output
-        if self._layer_id == 0:
-            self.register_network_output(f"attn", attention_output)
+        # if self._layer_id == 0:
+        #     self.register_network_output(f"attn", attention_output)
 
         hidden_states = residual + attention_output
 
         residual = hidden_states
         hidden_states = self.post_layernorm(hidden_states)
-        if self._layer_id == 0:
-            self.register_network_output(f"norm1", hidden_states)
+        # if self._layer_id == 0:
+        #     self.register_network_output(f"norm1", hidden_states)
 
         hidden_states = self.mlp(hidden_states, all_reduce_workspace)
-        if self._layer_id == 0:
-            self.register_network_output(f"mlp", hidden_states)
+        # if self._layer_id == 0:
+        #     self.register_network_output(f"mlp", hidden_states)
 
         hidden_states = residual + hidden_states
         if use_cache:
@@ -213,7 +213,7 @@ class LLaMAModel(Module):
             hidden_states = self.vocab_embedding(input_ids)
         else:
             hidden_states = recv(hidden_states, self.mapping.prev_pp_rank())
-        self.register_network_output(f"embd", hidden_states)
+        # self.register_network_output(f"embd", hidden_states)
 
         for layer, past, pointer in zip(
                 self.layers, kv_cache_params.past_key_value,
@@ -339,6 +339,7 @@ class LLaMAForCausalLM(LLaMAModel, GenerationMixin):
                 default_net().plugin_config.remove_input_padding)
 
             # [batch_size, hidden_size] -> [batch_size, vocab_size]
+            self.register_network_output(f"last_hidden_states", hidden_states)
             lm_logits = self.lm_head(hidden_states)
             lm_logits.mark_output('logits', self.logits_dtype)
         else:
