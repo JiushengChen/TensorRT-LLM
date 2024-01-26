@@ -1671,7 +1671,7 @@ class GenerationSession(object):
                 outputs['context_logits'] = context_logits
 
             if generation_last_hidden_states:
-                all_generation_last_hidden_states = torch.cat(generation_last_hidden_states, dim=0)
+                all_generation_last_hidden_states = torch.stack(generation_last_hidden_states, dim=0)
                 average_generation_last_hidden_states = torch.mean(all_generation_last_hidden_states, dim=0)
             else:
                 average_generation_last_hidden_states = None

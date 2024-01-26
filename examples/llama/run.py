@@ -201,6 +201,7 @@ def parse_arguments():
     parser.add_argument('--num_samples',
                         type=int,
                         default=128)
+    parser.add_argument('--embedding', default=False, action='store_true')
     return parser.parse_args()
 
 def print_benchmark(latencies, batch_size):
@@ -221,6 +222,7 @@ def generate(
     streaming_interval: int = 5,
     batch_size: int = 1,
     num_samples: int = 128,
+    embedding: bool = False,
 ):
     tensorrt_llm.logger.set_level(log_level)
 
@@ -305,17 +307,23 @@ def generate(
             # decoder.setup(input_lengths.size(0), max_input_length, max_output_len)
 
             start = time.time()
-            output_ids = decoder.decode(input_ids, input_lengths, sampling_config)
+            ret = decoder.decode(input_ids, input_lengths, sampling_config, return_dict=embedding)
             torch.cuda.synchronize()
             end = time.time()
             latencies.append((end - start) * 1000)
-            print(f"\t --> output_shape {output_ids.shape} : {latencies[-1]:.3f} ms")
+            
 
-            input_token_num = input_lengths.sum().item()
-            generated_token_num = (output_ids != PAD_TOKEN).sum().item() - input_token_num
-            print(f"\t --> Num of generated tokens = {generated_token_num}")
-            print(f"\t\t --> input_token_num = {input_token_num}, output_token_num = {output_ids.numel()}, output_padding_num = {(output_ids == PAD_TOKEN).sum().item()} ")
-            num_generated_tokens += generated_token_num
+            if embedding:
+                print(f"\t --> output_shape {ret['last_hidden_states'].shape} : {latencies[-1]:.3f} ms")
+                num_generated_tokens += batch_size
+            else:
+                output_ids = ret
+                print(f"\t --> output_shape {output_ids.shape} : {latencies[-1]:.3f} ms")
+                input_token_num = input_lengths.sum().item()
+                generated_token_num = (output_ids != PAD_TOKEN).sum().item() - input_token_num
+                print(f"\t --> Num of generated tokens = {generated_token_num}")
+                print(f"\t\t --> input_token_num = {input_token_num}, output_token_num = {output_ids.numel()}, output_padding_num = {(output_ids == PAD_TOKEN).sum().item()} ")
+                num_generated_tokens += generated_token_num
 
         #if runtime_rank == 0:
         #    print(output_ids.shape, output_ids)
